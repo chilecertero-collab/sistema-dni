@@ -1,0 +1,464 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Gestor de DNI - Demo</title>
+<style>
+  body{font-family:Inter,system-ui,Segoe UI,Arial;margin:0;background:#f2f4f8;color:#111}
+  .container{max-width:900px;margin:28px auto;padding:20px;background:#fff;border-radius:10px;box-shadow:0 6px 30px rgba(10,20,40,0.08)}
+  h1{margin:0 0 12px;font-size:22px}
+  .row{display:flex;gap:12px;flex-wrap:wrap}
+  button{padding:8px 12px;border-radius:8px;border:1px solid #ccc;background:#fafafa;cursor:pointer}
+  input,select,textarea{padding:8px;border-radius:6px;border:1px solid #ccc;width:100%;box-sizing:border-box}
+  .hidden{display:none}
+  .menu{margin-top:14px}
+  .dni-card{border:1px solid #ddd;padding:12px;border-radius:10px;background:linear-gradient(90deg,#fff,#f7fbff)}
+  .dni-top{display:flex;justify-content:space-between;align-items:center}
+  .dni-img{width:110px;height:110px;background:#eee;border-radius:6px;object-fit:cover}
+  .field{margin:6px 0}
+  .small{font-size:13px;color:#555}
+  .search-row{display:flex;gap:8px;margin-bottom:8px}
+  .danger{background:#ffecec;border-color:#ffbcbc}
+  .success{background:#e7fff2;border-color:#a7e3c1}
+  nav{display:flex;gap:8px;flex-wrap:wrap}
+  .topbar{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
+  .code{font-family:monospace;background:#f6f7fb;padding:6px;border-radius:6px}
+  .note{font-size:13px;color:#666;margin-top:8px}
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="topbar">
+    <h1>Gestor de DNI (demo)</h1>
+    <div id="user-info"></div>
+  </div>
+
+  <!-- LOGIN / REGISTER -->
+  <div id="login-screen">
+    <div class="row">
+      <div style="flex:1;min-width:260px">
+        <h3>Iniciar sesión</h3>
+        <div class="field"><label class="small">Usuario de Discord</label><input id="login-username" placeholder="ej: bauti#1234"></div>
+        <div class="field"><label class="small">Contraseña</label><input id="login-password" type="password" placeholder="contraseña"></div>
+        <div class="row">
+          <button id="btn-login">Entrar</button>
+          <button id="btn-to-register">Crear cuenta (si no tienes)</button>
+        </div>
+        <div id="login-msg" class="note"></div>
+      </div>
+      <div style="flex:1;min-width:260px">
+        <h3>Registrar (se genera contraseña automáticamente)</h3>
+        <div class="field"><label class="small">Usuario de Discord</label><input id="reg-username" placeholder="ej: bauti#1234"></div>
+        <div class="row">
+          <button id="btn-register">Registrar y mostrar contraseña</button>
+        </div>
+        <div id="reg-result" class="note"></div>
+        <div class="note">La contraseña generada aparecerá en pantalla — guárdala. Este demo almacena cuentas en tu navegador.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MAIN MENU -->
+  <div id="main-screen" class="hidden">
+    <nav class="menu">
+      <button id="btn-crear-dni">Crear DNI</button>
+      <button id="btn-moderador">Entrar como Moderador</button>
+      <button id="btn-policia">Entrar como Policía</button>
+      <button id="btn-logout">Cerrar sesión</button>
+    </nav>
+
+    <div id="app-area" style="margin-top:12px"></div>
+  </div>
+
+</div>
+
+<script>
+/*
+  Demo app:
+  - USE_SERVER = false -> guarda en localStorage (no compartido entre navegadores)
+  - Para compartir DNIs entre navegadores ejecuta el servidor Node.js que te doy y activa USE_SERVER=true y ajusta API_BASE.
+*/
+const USE_SERVER = false; // cambiar a true si montas el servidor (ver instrucciones abajo)
+const API_BASE = "http://localhost:4000/api"; // si activas servidor, ajusta si hace falta
+
+/* ---------- Helpers ---------- */
+function genPassword(len=10){
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#";
+  let s = "";
+  for(let i=0;i<len;i++) s += chars.charAt(Math.floor(Math.random()*chars.length));
+  return s;
+}
+function qs(id){return document.getElementById(id)}
+function saveLocal(key, value){localStorage.setItem(key, JSON.stringify(value))}
+function loadLocal(key, def){const v = localStorage.getItem(key); return v? JSON.parse(v): def}
+function formatRutFromDigits(digs){
+  // expects array of digits length 8 (XX.XXX.XXX) then dash + verifier (1 digit)
+  // We'll build like "12.345.678-9"
+  const s = digs.join('');
+  if(s.length !== 8) return s;
+  return s.slice(0,2)+"."+s.slice(2,5)+"."+s.slice(5,8)+"-"+Math.floor(Math.random()*10);
+}
+function formatDocFromDigits(digs){
+  // expects 9 digits -> XXX.XXX.XXX
+  const s = digs.join('');
+  if(s.length!==9) return s;
+  return s.slice(0,3)+"."+s.slice(3,6)+"."+s.slice(6,9);
+}
+function makeRandomRut(){
+  const digs = Array.from({length:8},()=>Math.floor(Math.random()*10));
+  return formatRutFromDigits(digs);
+}
+function makeRandomDoc(){
+  const digs = Array.from({length:9},()=>Math.floor(Math.random()*10));
+  return formatDocFromDigits(digs);
+}
+function showMsg(el, txt, t=3000){
+  el.innerText = txt;
+  if(t>0) setTimeout(()=>el.innerText='', t);
+}
+/* ---------- Storage layer (local or server) ---------- */
+
+async function apiRegister(username, password){
+  if(USE_SERVER){
+    const res = await fetch(API_BASE + "/register", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({username, password})
+    });
+    return res.json();
+  } else {
+    const users = loadLocal("users", {});
+    if(users[username]) return { ok:false, error:"Usuario ya existe" };
+    users[username] = { username, password };
+    saveLocal("users", users);
+    return { ok:true };
+  }
+}
+async function apiLogin(username, password){
+  if(USE_SERVER){
+    const res = await fetch(API_BASE + "/login", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({username, password})
+    });
+    return res.json();
+  } else {
+    const users = loadLocal("users", {});
+    if(users[username] && users[username].password === password) return { ok:true };
+    return { ok:false, error:"Usuario/contraseña incorrectos" };
+  }
+}
+async function apiGetAllDnis(){
+  if(USE_SERVER){
+    const r = await fetch(API_BASE + "/dnis");
+    return r.json();
+  } else return loadLocal("dnis", []);
+}
+async function apiCreateDni(dniObj){
+  if(USE_SERVER){
+    const r = await fetch(API_BASE + "/dnis", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify(dniObj)
+    });
+    return r.json();
+  } else {
+    const list = loadLocal("dnis", []);
+    list.push(dniObj);
+    saveLocal("dnis", list);
+    return { ok:true };
+  }
+}
+async function apiDeleteDni(docNumber){
+  if(USE_SERVER){
+    const r = await fetch(API_BASE + "/dnis/" + encodeURIComponent(docNumber), { method:"DELETE" });
+    return r.json();
+  } else {
+    let list = loadLocal("dnis", []);
+    list = list.filter(d=>d.docNumber !== docNumber);
+    saveLocal("dnis", list);
+    return { ok:true };
+  }
+}
+
+/* ---------- UI Logic ---------- */
+
+let CURRENT_USER = loadLocal("session_user", null);
+const userInfoEl = qs("user-info");
+
+function setLoggedIn(username){
+  CURRENT_USER = username;
+  saveLocal("session_user", username);
+  renderTop();
+  qs("login-screen").classList.add("hidden");
+  qs("main-screen").classList.remove("hidden");
+  qs("app-area").innerHTML = `<p class="note">Bienvenido, <b>${username}</b>. Usa el menú para crear/ver tu DNI o entrar como moderador/policía.</p>`;
+  // update Crear DNI button visibility (if user already has DNI -> change to Ver DNI)
+  updateCrearVerButton();
+}
+
+function logout(){
+  CURRENT_USER = null;
+  localStorage.removeItem("session_user");
+  qs("main-screen").classList.add("hidden");
+  qs("login-screen").classList.remove("hidden");
+  renderTop();
+}
+
+function renderTop(){
+  if(CURRENT_USER){
+    userInfoEl.innerHTML = `<div class="small">Conectado: <b>${CURRENT_USER}</b></div>`;
+  } else userInfoEl.innerHTML = '';
+}
+
+async function updateCrearVerButton(){
+  const btn = qs("btn-crear-dni");
+  const dnis = await apiGetAllDnis();
+  const mine = dnis.find(d=>d.discordUser === CURRENT_USER);
+  if(mine){
+    btn.textContent = "Ver DNI";
+    btn.dataset.mode = "view";
+  } else {
+    btn.textContent = "Crear DNI";
+    btn.dataset.mode = "create";
+  }
+}
+
+/* LOGIN / REGISTER handlers */
+qs("btn-register").addEventListener("click", async ()=>{
+  const username = qs("reg-username").value.trim();
+  if(!username){ showMsg(qs("reg-result"), "Ingresa un usuario de Discord"); return; }
+  const pwd = genPassword(10);
+  const res = await apiRegister(username, pwd);
+  if(!res.ok){ showMsg(qs("reg-result"), res.error || "Error"); return; }
+  showMsg(qs("reg-result"), `Cuenta creada. Tu contraseña (guárdala): ${pwd}`, 10000);
+  // store plain pwd locally if local mode
+  if(!USE_SERVER){
+    const users = loadLocal("users", {});
+    users[username].password = pwd;
+    saveLocal("users", users);
+  }
+});
+
+qs("btn-login").addEventListener("click", async ()=>{
+  const u = qs("login-username").value.trim();
+  const p = qs("login-password").value;
+  if(!u || !p){ showMsg(qs("login-msg"), "Completa usuario y contraseña"); return; }
+  const res = await apiLogin(u,p);
+  if(!res.ok){ showMsg(qs("login-msg"), res.error || "Login falló"); return; }
+  setLoggedIn(u);
+});
+
+qs("btn-to-register").addEventListener("click", ()=>{
+  // scroll to register area: just focus
+  qs("reg-username").focus();
+});
+
+/* Main menu buttons */
+qs("btn-logout").addEventListener("click", logout);
+
+qs("btn-crear-dni").addEventListener("click", async ()=>{
+  if(!CURRENT_USER){ alert("Inicia sesión primero"); return; }
+  const mode = qs("btn-crear-dni").dataset.mode || "create";
+  if(mode === "create"){
+    showCreateForm();
+  } else {
+    showMyDni();
+  }
+});
+
+qs("btn-moderador").addEventListener("click", ()=>{
+  const pwd = prompt("Contraseña moderador:");
+  if(pwd === null) return;
+  // Aceptamos "Estrella0703v" o "Estrella0703 v" (el usuario puso un espacio en su mensaje)
+  if(pwd === "Estrella0703v" || pwd === "Estrella0703 v"){
+    showModeratorView();
+  } else alert("Contraseña moderador incorrecta.");
+});
+
+qs("btn-policia").addEventListener("click", ()=>{
+  const pwd = prompt("Contraseña policía:");
+  if(pwd === null) return;
+  if(pwd === "CarabCl"){
+    showPoliceView();
+  } else alert("Contraseña policía incorrecta.");
+});
+
+/* ---------- Forms & Views ---------- */
+
+function showCreateForm(){
+  const app = qs("app-area");
+  app.innerHTML = `
+    <h3>Crear DNI</h3>
+    <div class="dni-card">
+      <div class="field"><label class="small">Usuario de Discord</label><input id="f-discord" value="${CURRENT_USER}" disabled></div>
+      <div class="field"><label class="small">Nombre</label><input id="f-nombre"></div>
+      <div class="field"><label class="small">Apellido</label><input id="f-apellido"></div>
+      <div class="field"><label class="small">Nacionalidad</label><input id="f-nacionalidad"></div>
+      <div class="field"><label class="small">Fecha de nacimiento</label><input id="f-fnac" type="date"></div>
+      <div class="field"><label class="small">Género</label>
+        <select id="f-genero"><option value="Masculino">Masculino</option><option value="Femenino">Femenino</option></select>
+      </div>
+      <div class="field"><label class="small">Imagen (foto principal)</label><input id="f-img" type="file" accept="image/*"></div>
+      <div class="field"><label class="small">Imagen (foto lateral)</label><input id="f-img2" type="file" accept="image/*"></div>
+      <div class="row" style="margin-top:8px">
+        <button id="btn-create-dni-final">Crear DNI</button>
+        <button id="btn-cancel-create">Cancelar</button>
+      </div>
+      <div id="create-dni-msg" class="note"></div>
+    </div>
+  `;
+  qs("btn-cancel-create").addEventListener("click", ()=>{ qs("app-area").innerHTML = ""; updateCrearVerButton(); });
+  qs("btn-create-dni-final").addEventListener("click", async ()=>{
+    const nombre = qs("f-nombre").value.trim();
+    const apellido = qs("f-apellido").value.trim();
+    const nacionalidad = qs("f-nacionalidad").value.trim();
+    const fnac = qs("f-fnac").value;
+    const genero = qs("f-genero").value;
+    const file = qs("f-img").files[0];
+    const file2 = qs("f-img2").files[0];
+
+    if(!nombre || !apellido || !nacionalidad || !fnac){
+      showMsg(qs("create-dni-msg"), "Completa todos los campos");
+      return;
+    }
+
+    // read images as base64 (if any)
+    function readFileBase64(f){
+      return new Promise((res)=>{
+        if(!f) return res(null);
+        const r = new FileReader();
+        r.onload = ()=>res(r.result);
+        r.readAsDataURL(f);
+      });
+    }
+    const img1 = await readFileBase64(file);
+    const img2 = await readFileBase64(file2);
+
+    // Generate rut and doc numbers in requested formats
+    const rut = makeRandomRut(); // format XX.XXX.XXX-9
+    const doc = makeRandomDoc(); // format XXX.XXX.XXX
+
+    const dniObj = {
+      discordUser: CURRENT_USER,
+      nombre, apellido, nacionalidad, fnac, genero,
+      img1, img2,
+      rut, docNumber: doc,
+      createdAt: new Date().toISOString()
+    };
+    const res = await apiCreateDni(dniObj);
+    if(!res.ok && res.error){ showMsg(qs("create-dni-msg"), res.error); return; }
+    showMsg(qs("create-dni-msg"), "DNI creado con éxito", 3000);
+    // return to main menu and change button
+    setTimeout(()=>{ qs("app-area").innerHTML = ""; updateCrearVerButton(); }, 800);
+  });
+}
+
+async function showMyDni(){
+  const dnis = await apiGetAllDnis();
+  const mine = dnis.find(d=>d.discordUser === CURRENT_USER);
+  if(!mine){ qs("app-area").innerHTML = "<p class='note'>No tienes DNI creado.</p>"; return; }
+  qs("app-area").innerHTML = renderDniHtml(mine);
+}
+
+function renderDniHtml(d){
+  // show a styled "DNI"
+  return `
+    <div class="dni-card">
+      <div class="dni-top">
+        <div>
+          <div class="small">Documento: <b>${d.docNumber}</b></div>
+          <div class="small">RUT: <b>${d.rut}</b></div>
+        </div>
+        <div>
+          ${d.img1 ? `<img src="${d.img1}" class="dni-img" alt="foto">` : `<div class="dni-img small" style="display:flex;align-items:center;justify-content:center">Sin foto</div>`}
+        </div>
+      </div>
+      <hr/>
+      <div><b>${d.nombre} ${d.apellido}</b></div>
+      <div class="small">Usuario Discord: ${d.discordUser}</div>
+      <div class="small">Nacionalidad: ${d.nacionalidad}</div>
+      <div class="small">Fecha de nacimiento: ${d.fnac}</div>
+      <div class="small">Género: ${d.genero}</div>
+      ${d.img2 ? `<div style="margin-top:8px"><img src="${d.img2}" style="width:90px;height:90px;object-fit:cover;border-radius:6px"></div>` : ""}
+    </div>
+  `;
+}
+
+/* Moderator view */
+async function showModeratorView(){
+  const app = qs("app-area");
+  app.innerHTML = `<h3>Modo Moderador</h3><div class="search-row"><input id="search-mod" placeholder="Buscar por usuario de discord"><button id="btn-search-mod">Buscar</button><button id="btn-refresh-mod">Refrescar</button></div><div id="mod-list"></div>`;
+  async function renderList(filter=""){
+    const list = await apiGetAllDnis();
+    const filtered = filter ? list.filter(d=>d.discordUser.toLowerCase().includes(filter.toLowerCase())) : list;
+    const out = filtered.map(d=>`
+      <div class="dni-card" style="margin-bottom:8px">
+        ${renderDniHtmlInList(d)}
+        <div style="margin-top:8px"><button class="btn-del" data-doc="${d.docNumber}">Eliminar</button></div>
+      </div>
+    `).join("");
+    qs("mod-list").innerHTML = out || "<div class='note'>No hay DNI</div>";
+    // attach delete handlers
+    Array.from(document.querySelectorAll(".btn-del")).forEach(b=>{
+      b.addEventListener("click", async ()=> {
+        const doc = b.dataset.doc;
+        if(confirm("Eliminar documento "+doc+" ?")) {
+          await apiDeleteDni(doc);
+          renderList(filter);
+        }
+      });
+    });
+  }
+  document.getElementById("btn-search-mod").addEventListener("click", ()=> renderList(qs("search-mod").value.trim()));
+  document.getElementById("btn-refresh-mod").addEventListener("click", ()=> renderList(""));
+  renderList();
+}
+
+function renderDniHtmlInList(d){
+  return `
+    <div style="display:flex;gap:12px">
+      <div style="flex:1">
+        <div><b>${d.nombre} ${d.apellido}</b> <span class="small">(${d.discordUser})</span></div>
+        <div class="small">Doc: ${d.docNumber} — RUT: ${d.rut}</div>
+        <div class="small">Nac: ${d.nacionalidad} — FN: ${d.fnac} — Gen: ${d.genero}</div>
+      </div>
+      <div style="width:120px">${d.img1 ? `<img src="${d.img1}" style="width:120px;height:80px;object-fit:cover;border-radius:6px">` : ""}</div>
+    </div>
+  `;
+}
+
+/* Police view (no delete) */
+async function showPoliceView(){
+  const app = qs("app-area");
+  app.innerHTML = `<h3>Modo Policía</h3><div class="search-row"><input id="search-pol" placeholder="Buscar por usuario de discord"><button id="btn-search-pol">Buscar</button><button id="btn-refresh-pol">Refrescar</button></div><div id="pol-list"></div>`;
+  async function renderList(filter=""){
+    const list = await apiGetAllDnis();
+    const filtered = filter ? list.filter(d=>d.discordUser.toLowerCase().includes(filter.toLowerCase())) : list;
+    const out = filtered.map(d=>`
+      <div class="dni-card" style="margin-bottom:8px">
+        ${renderDniHtmlInList(d)}
+      </div>
+    `).join("");
+    qs("pol-list").innerHTML = out || "<div class='note'>No hay DNI</div>";
+  }
+  document.getElementById("btn-search-pol").addEventListener("click", ()=> renderList(qs("search-pol").value.trim()));
+  document.getElementById("btn-refresh-pol").addEventListener("click", ()=> renderList(""));
+  renderList();
+}
+
+/* Init */
+renderTop();
+if(CURRENT_USER){
+  qs("login-screen").classList.add("hidden");
+  qs("main-screen").classList.remove("hidden");
+  updateCrearVerButton();
+} else {
+  qs("login-screen").classList.remove("hidden");
+  qs("main-screen").classList.add("hidden");
+}
+
+/* Optional: make Enter key submit on login form */
+qs("login-password").addEventListener("keyup", (e)=>{ if(e.key === "Enter") qs("btn-login").click(); });
+
+</script>
+</body>
+</html>
